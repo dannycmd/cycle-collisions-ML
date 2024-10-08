@@ -1,6 +1,11 @@
 import pandas as pd
 
 df = pd.read_csv("stats19CycleCollisions2022.csv", header=0)
+df = df.rename(columns={
+    'longitude.x': 'longitude',
+    'latitude.x': 'latitude',
+    'date.x': 'date'
+})
 
 # determining number of vehicles involved in each collision - assume this will be 2 the majority of the time
 accident_summary = df.groupby("accident_index").agg({"number_of_vehicles": "max",
@@ -44,9 +49,9 @@ df['vehicle_subtype'] = [
 
 # creating a separate collision for each bike casualty
 casualty_vars = [
-    'longitude.x', 
-    'latitude.x', 
-    'date.x',
+    'longitude', 
+    'latitude', 
+    'date',
     'day_of_week',
     'time', 
     'first_road_class',
@@ -104,9 +109,9 @@ driver_vars = [
 unique_casualties = df[(df['vehicle_type'] == 'Pedal cycle') & ~pd.isnull(df['casualty_reference'])][['accident_index', 'casualty_reference'] + casualty_vars].drop_duplicates().reset_index(drop=True)
 unique_casualties['accident_index_2'] = unique_casualties.index
 
-df_expanded = pd.merge(unique_casualties, df[['accident_index', 'casualty_reference', 'number_of_vehicles'] + vehicle_vars + driver_vars], how="inner", on="accident_index")
-df_expanded = df_expanded[((df_expanded['casualty_reference_x'] != df_expanded['casualty_reference_y']) & (df_expanded['number_of_vehicles'] > 1)) | (df_expanded['number_of_vehicles'] == 1)]\
-    .drop(columns=['casualty_reference_x', 'casualty_reference_y', 'accident_index', 'number_of_vehicles'])
+df_expanded = pd.merge(unique_casualties, df[['accident_index', 'casualty_reference', 'number_of_vehicles'] + vehicle_vars + driver_vars], how="inner", on="accident_index", suffixes=["", "_y"])
+df_expanded = df_expanded[((df_expanded['casualty_reference'] != df_expanded['casualty_reference_y']) & (df_expanded['number_of_vehicles'] > 1)) | (df_expanded['number_of_vehicles'] == 1)]\
+    .drop(columns=['casualty_reference', 'casualty_reference_y', 'accident_index', 'number_of_vehicles'])
 
 # keep 1 vehicle per collision, based on hierarchy
 df_expanded = df_expanded.sort_values(['accident_index_2', 'vehicle_subtype'])
