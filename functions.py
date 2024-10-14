@@ -163,14 +163,15 @@ def impute_fit_df(df):
 
     # imputing continuous variables
     # creating new vehicle_type column because some values of vehicle_type have no values for engine_capacity_cc -> using other types of vehicle that have the most similar engine size
-    df["vehicle_type_2"] = [
-        "Goods over 3.5t. and under 7.5t" if vehicle_type in ["Agricultural vehicle", "Goods vehicle - unknown weight"]
-        else "Motorcycle 50cc and under" if vehicle_type == "Electric motorcycle"
-        else "Motorcycle 125cc and under" if vehicle_type == "Motorcycle - unknown cc"
-        else "Car" if vehicle_type == "Unknown vehicle type (self rep only)"
-        else vehicle_type
-        for vehicle_type in df["vehicle_type"]
-    ]
+    if "vehicle_type" in df.columns:
+        df["vehicle_type_2"] = [
+            "Goods over 3.5t. and under 7.5t" if vehicle_type in ["Agricultural vehicle", "Goods vehicle - unknown weight"]
+            else "Motorcycle 50cc and under" if vehicle_type == "Electric motorcycle"
+            else "Motorcycle 125cc and under" if vehicle_type == "Motorcycle - unknown cc"
+            else "Car" if vehicle_type == "Unknown vehicle type (self rep only)"
+            else vehicle_type
+            for vehicle_type in df["vehicle_type"]
+        ]
 
     vars_to_groupby = {
         "engine_capacity_cc": "vehicle_type_2",
@@ -193,12 +194,17 @@ def impute_fit_df(df):
 
     # fit scaler
     continuous_vars = [col for col in list(df.select_dtypes(exclude='object').columns) if col not in ['longitude', 'latitude']]
-    scaler = MinMaxScaler()
-    scaler.fit(df[continuous_vars])
+    if len(continuous_vars) > 0:
+        scaler = MinMaxScaler()
+        scaler.fit(df[continuous_vars])
+    else:
+        scaler = None
 
     return categorical_freqs, vars_to_groupby, continuous_medians_grouped, continuous_medians, scaler
 
-def impute_transform_df(df, categorical_freqs, vars_to_groupby, continuous_medians_grouped, continuous_medians, scaler, select_features, encoded_cols_dict=None):
+def impute_transform_df(df, categorical_freqs, vars_to_groupby, continuous_medians_grouped,
+                        continuous_medians, scaler, select_features, encoded_cols_dict=None,
+                        one_hot_encode=True):
     missing = pd.DataFrame([i for i in zip(df.columns, df.dtypes, df.nunique(), 100 * ((df == "Missing") | (df.isnull())).mean()) if i[3] > 0], columns=['column', 'dtype', 'nunique', 'missing %']).sort_values("missing %")
 
     # categorical missing values imputed while keeping the category distributions of each variable the same
@@ -211,14 +217,15 @@ def impute_transform_df(df, categorical_freqs, vars_to_groupby, continuous_media
 
     # imputing continuous variables
     # creating new vehicle_type column because some values of vehicle_type have no values for engine_capacity_cc -> using other types of vehicle that have the most similar engine size
-    df["vehicle_type_2"] = [
-        "Goods over 3.5t. and under 7.5t" if vehicle_type in ["Agricultural vehicle", "Goods vehicle - unknown weight"]
-        else "Motorcycle 50cc and under" if vehicle_type == "Electric motorcycle"
-        else "Motorcycle 125cc and under" if vehicle_type == "Motorcycle - unknown cc"
-        else "Car" if vehicle_type == "Unknown vehicle type (self rep only)"
-        else vehicle_type
-        for vehicle_type in df["vehicle_type"]
-    ]
+    if "vehicle_type" in df.columns:
+        df["vehicle_type_2"] = [
+            "Goods over 3.5t. and under 7.5t" if vehicle_type in ["Agricultural vehicle", "Goods vehicle - unknown weight"]
+            else "Motorcycle 50cc and under" if vehicle_type == "Electric motorcycle"
+            else "Motorcycle 125cc and under" if vehicle_type == "Motorcycle - unknown cc"
+            else "Car" if vehicle_type == "Unknown vehicle type (self rep only)"
+            else vehicle_type
+            for vehicle_type in df["vehicle_type"]
+        ]
 
     # first imputation should capture most nulls
     # second imputation should capture any remaining nulls (remaining because there were no values in the lookup group)
@@ -249,7 +256,8 @@ def impute_transform_df(df, categorical_freqs, vars_to_groupby, continuous_media
             engine_capacity_car = continuous_medians["engine_capacity_cc"]
         df["engine_capacity_cc"] = np.where(df["vehicle_type"] == "Pedal cycle", 0.00065 * engine_capacity_car, df["engine_capacity_cc"])
 
-    df = df.drop(columns=["vehicle_type_2"])
+    if "vehicle_type_2" in df.columns:
+        df = df.drop(columns=["vehicle_type_2"])
 
     # check there are no more missing values
     assert sum(((df.isna()) | (df == "Missing")).any()) == 0
@@ -259,14 +267,16 @@ def impute_transform_df(df, categorical_freqs, vars_to_groupby, continuous_media
 
     # apply transformations
     continuous_vars = [col for col in list(df.select_dtypes(exclude='object').columns) if col not in ['longitude', 'latitude']]
-    df[continuous_vars] = scaler.transform(df[continuous_vars])
+    if scaler != None:
+        df[continuous_vars] = scaler.transform(df[continuous_vars])
 
-    categorical_vars = [col for col in list(df.select_dtypes(include='object').columns) if col not in ['date', 'time', 'casualty_severity']]
-    df = pd.get_dummies(df, columns=categorical_vars, drop_first=False)
+    if one_hot_encode:
+        categorical_vars = [col for col in list(df.select_dtypes(include='object').columns) if col not in ['date', 'time', 'casualty_severity']]
+        df = pd.get_dummies(df, columns=categorical_vars, drop_first=False)
 
     # add empty columns for one-hot encoded columns that are missing
     # sklearn requires that train and test data has the same columns
-    if encoded_cols_dict != None:
+    if encoded_cols_dict != None and one_hot_encode:
         encoded_cols = []
         for col in select_features:
             if col in encoded_cols_dict:
