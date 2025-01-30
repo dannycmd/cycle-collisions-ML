@@ -53,10 +53,10 @@ def transform_raw_data(path_to_csv):
         'special_conditions_at_site', 
         'carriageway_hazards',
         'urban_or_rural_area',
-        'RH2M', 
-        'T2M', 
-        'PRECTOTCORR',
-        'WS2M',
+        # 'RH2M', 
+        # 'T2M', 
+        # 'PRECTOTCORR',
+        # 'WS2M',
         'sex_of_casualty', 
         'age_of_casualty', 
         'age_band_of_casualty',
@@ -123,7 +123,7 @@ def transform_raw_data(path_to_csv):
 
 def clean_df(df):
     # standardise missing values
-    missing_values = ['Data missing or out of range', 'unknown (self reported)', np.nan, 'Unknown', 'Not known', 'Undefined']
+    missing_values = ['Data missing or out of range', 'unknown (self reported)', np.nan, pd.NA, 'Unknown', 'Not known', 'Undefined', '-1', 'Unallocated']
     df = df.replace({i: "Missing" for i in missing_values})
 
     drop_columns = [
@@ -149,6 +149,9 @@ def clean_df(df):
     # does not make sense for propulsion_code to have a value for cyclists
     if 'propulsion_code' in df.columns:
         df["propulsion_code"] = np.where(df["vehicle_type"] == "Pedal cycle", "Undefined", df["propulsion_code"])
+
+    if 'junction_control' in df.columns:
+        df['junction_control'] = df['junction_control'].replace('Missing', 'Not at or within 20 metres of junction')
 
     return df
 
@@ -192,6 +195,15 @@ def impute_fit_df(df):
             else:
                 continuous_medians_grouped[col] = None
 
+    # "Pedal cycle" has no values for engine_capacity_cc for obvious reasons
+    # assume average cyclist can push 100W ≈ 0.13 horsepower -> horsepower of standard car ~200 -> cyclist horsepower 0.13/200=0.00065 of a car -> set engine_capacity_cc of "Pedal cycle" to 0.00065 that of a car
+    if 'engine_capacity_cc' in df.columns:
+        try:
+            engine_capacity_car = continuous_medians_grouped["engine_capacity_cc"].loc["Car"]
+        except:
+            engine_capacity_car = continuous_medians["engine_capacity_cc"]
+        df["engine_capacity_cc"] = np.where(df["vehicle_type"] == "Pedal cycle", 0.00065 * engine_capacity_car, df["engine_capacity_cc"])
+
     # fit scaler
     continuous_vars = [col for col in list(df.select_dtypes(exclude='object').columns) if col not in ['longitude', 'latitude']]
     if len(continuous_vars) > 0:
@@ -204,7 +216,7 @@ def impute_fit_df(df):
 
 def impute_transform_df(df, categorical_freqs, vars_to_groupby, continuous_medians_grouped,
                         continuous_medians, scaler, select_features, encoded_cols_dict=None,
-                        one_hot_encode=True):
+                        one_hot_encode=True, one_hot_encoded_cols=None):
     missing = pd.DataFrame([i for i in zip(df.columns, df.dtypes, df.nunique(), 100 * ((df == "Missing") | (df.isnull())).mean()) if i[3] > 0], columns=['column', 'dtype', 'nunique', 'missing %']).sort_values("missing %")
 
     # categorical missing values imputed while keeping the category distributions of each variable the same
@@ -212,8 +224,9 @@ def impute_transform_df(df, categorical_freqs, vars_to_groupby, continuous_media
     df = df.replace("Missing", np.nan).reset_index(drop=True)
 
     for col in categorical_missing:
-        freq_dict = categorical_freqs[col]
-        df[col] = df[col].fillna(pd.Series(np.random.choice(list(freq_dict.keys()), p=list(freq_dict.values()), size=len(df))))
+        if col in select_features and col not in ['longitude', 'latitude']:
+            freq_dict = categorical_freqs[col]
+            df[col] = df[col].fillna(pd.Series(np.random.choice(list(freq_dict.keys()), p=list(freq_dict.values()), size=len(df))))
 
     # imputing continuous variables
     # creating new vehicle_type column because some values of vehicle_type have no values for engine_capacity_cc -> using other types of vehicle that have the most similar engine size
@@ -231,7 +244,7 @@ def impute_transform_df(df, categorical_freqs, vars_to_groupby, continuous_media
     # second imputation should capture any remaining nulls (remaining because there were no values in the lookup group)
     def impute_continuous_vars(df, impute_lookup, grouped=False):
         for var in impute_lookup:
-            if var in df.columns:
+            if var in select_features:
                 if grouped and vars_to_groupby[var] in df.columns:
                     lookup_df = impute_lookup[var]
                     df = pd.merge(df, lookup_df, how="left", on=vars_to_groupby[var], suffixes=["", "_y"])
@@ -248,7 +261,7 @@ def impute_transform_df(df, categorical_freqs, vars_to_groupby, continuous_media
     df = df_2
 
     # "Pedal cycle" has no values for engine_capacity_cc for obvious reasons
-    # assume average cyclist can push 100W ≈ 0.13 horsepower -> horsepower of standard car ~200 -> cyclist horsepower 0.2/200=0.00065 of a car -> set engine_capacity_cc of "Pedal cycle" to 0.00125 that of a car
+    # assume average cyclist can push 100W ≈ 0.13 horsepower -> horsepower of standard car ~200 -> cyclist horsepower 0.13/200=0.00065 of a car -> set engine_capacity_cc of "Pedal cycle" to 0.00065 that of a car
     if 'engine_capacity_cc' in df.columns:
         try:
             engine_capacity_car = continuous_medians_grouped["engine_capacity_cc"].loc["Car"]
@@ -259,11 +272,11 @@ def impute_transform_df(df, categorical_freqs, vars_to_groupby, continuous_media
     if "vehicle_type_2" in df.columns:
         df = df.drop(columns=["vehicle_type_2"])
 
-    # check there are no more missing values
-    assert sum(((df.isna()) | (df == "Missing")).any()) == 0
-
     # select features
     df = df[select_features]
+
+    # check there are no more missing values
+    assert sum(((df.isna()) | (df == "Missing")).any()) == 0
 
     # apply transformations
     continuous_vars = [col for col in list(df.select_dtypes(exclude='object').columns) if col not in ['longitude', 'latitude']]
@@ -285,6 +298,10 @@ def impute_transform_df(df, categorical_freqs, vars_to_groupby, continuous_media
         missing_encoded_cols = [col for col in encoded_cols if col not in df.columns]
         df[missing_encoded_cols] = np.zeros((len(df), len(missing_encoded_cols)))
         df[missing_encoded_cols] = df[missing_encoded_cols].astype('bool')
+
+    # filter for selected one-hot encoded columns
+    if one_hot_encoded_cols != None:
+        df = df[continuous_vars + one_hot_encoded_cols]
 
     # sklearn requires that train and test data has same column order
     cols = sorted(list(df.columns))
