@@ -1,5 +1,6 @@
 # install.packages("stats19")
 # install.packages("nasapower")
+# install.packages("devtools")
 library(stats19)
 library(dplyr)
 library(tidyr)
@@ -8,6 +9,29 @@ library(purrr)
 library(nasapower)
 
 years <- 2019:2022
+
+convert_to_col_type = function(type) {
+  switch(type,
+         character = readr::col_character(),
+         numeric = readr::col_integer(),
+         integer = readr::col_integer(),
+         logical = readr::col_logical(),
+         date = readr::col_date(),
+         datetime = readr::col_datetime(),
+         readr::col_guess())
+}
+
+col_spec = function() {
+    # Create a named list of column types
+  unique_vars = unique(stats19::stats19_variables$variable)
+  unique_types = sapply(unique_vars, function(v) {
+    type = stats19::stats19_variables$type[stats19::stats19_variables$variable == v][1]
+    convert_to_col_type(type)
+  })
+
+  col_types = stats::setNames(unique_types, unique_vars)
+  do.call(readr::cols, col_types)
+}
 
 # get_stats19 function downloads a csv of the requested data and cleans it
 accidents <- get_stats19(year = years[1], type = "accidents", ask = FALSE, format = FALSE)
@@ -18,7 +42,13 @@ for (year in years[-1]) {
   accidents_append <- get_stats19(year = year, type = "accidents", ask = FALSE, format = FALSE)
   accidents <- bind_rows(accidents, accidents_append)
 
-  vehicles_append <- get_stats19(year = year, type = "vehicle", ask = FALSE, format = FALSE)
+  # known issue with the stats19 library for reading vehicle data for 2020
+  if (year == 2020) (
+    vehicles_append <- readr::read_csv("/Users/danjr/Documents/Projects/cycle collisions/dft-road-casualty-statistics-vehicle-2020.csv",
+                                      col_types = col_spec())
+  ) else {
+    vehicles_append <- get_stats19(year = year, type = "vehicle", ask = FALSE, format = FALSE)
+  }
   vehicles <- bind_rows(vehicles, vehicles_append)
 
   casualties_append <- get_stats19(year = year, type = "casualty", ask = FALSE, format = FALSE)
@@ -67,7 +97,6 @@ format_stats19 = function(x, type) {
     x$date = as.Date(date_char, format = "%d/%m/%Y")
   }
   if(date_in_names && "time" %in% names(x)) {
-    # Add formated datetime column, tell people about this new feature
     message("date and time columns present, creating formatted datetime column")
 
     x$datetime = as.POSIXct(paste(date_char, x$time), tz = 'Europe/London', format = "%d/%m/%Y %H:%M")
@@ -107,7 +136,7 @@ involving_cyclist <- accidents_vehicles_casualties %>%
   filter(vehicle_type == "Pedal cycle") %>%
   distinct(accident_index, longitude, latitude, date)
 
-### join additional weather data using 'nasapower' API
+##### join additional weather data using 'nasapower' API
 
 # create empty tibble to append weather data to
 weather <- tibble(
@@ -115,7 +144,12 @@ weather <- tibble(
   RH2M = numeric(),
   T2M = numeric(),
   PRECTOTCORR = numeric(),
-  WS2M = numeric()
+  WS2M = numeric(),
+  T2MDEW = numeric(),
+  SZA = numeric(),
+  QV2M = numeric(),
+  SNODP = numeric(),
+  CLOUD_AMT = numeric()
 )
 
 # loop through all collisions, querying the API for the weather at the time and location of each collision
@@ -132,22 +166,41 @@ for (i in seq_len(n)) {
   # RH2M = Relative Humidity at 2 Meters (%)
   # T2M = Temperature at 2 Meters (C)
   # PRECTOTCORR = Precipitation Corrected (mm/day)
-  daily_ag <- get_power(
-    community = "ag",
-    lonlat = c(lon, lat),
-    pars = c("RH2M", "T2M", "PRECTOTCORR", "WS2M"),
-    dates = date,
-    temporal_api = "daily"
+  # WS2M = wind speed at 2 Meters
+  # QV2M = Specific Humidity at 2 Meters
+  # T2MDEW = Dew/Frost Point at 2 Meters
+  # SNODP = snow depth
+  # SZA = solar zenith angle
+  # CLOUD_AMT = Cloud Amount
+  tryCatch( # error handling
+    {
+      daily_ag <- get_power(
+        community = "ag",
+        lonlat = c(lon, lat),
+        pars = c("RH2M", "T2M", "PRECTOTCORR", "WS2M", "T2MDEW", "SZA", "QV2M", "SNODP", "CLOUD_AMT"),
+        dates = date,
+        temporal_api = "hourly"
+      )
+      daily_ag["accident_index"] <- idx
+      # appending weather data to master tibble
+      weather <- bind_rows(weather, daily_ag)
+    },
+    error = function(cond){
+      message(paste0("Skipping nasapower data for obs ", i))
+      message(paste0("Obs: ", tbl[i, ]))
+      message("Here's the original error message:")
+      message(conditionMessage(cond))
+      return(NA)
+    },
+    finally = {
+      print(paste0("completion: ", round(100 * i / n, 2), "%"))
+    }
   )
-
-  daily_ag["accident_index"] <- idx
-  # removing unnecessary columns
-  daily_ag <- daily_ag %>% select(-c(YEAR, MM, DD, DOY, LAT, LON, YYYYMMDD))
-  # appending weather data to master tibble
-  weather <- bind_rows(weather, daily_ag)
-
-  print(paste0("completion: ", round(100 * i / n, 2), "%"))
 }
+
+write.csv(weather,
+          "C:/Users/danjr/Documents/Projects/cycle collisions/weather.csv",
+          row.names = FALSE)
 
 involving_cyclist <- inner_join(x = involving_cyclist,
                                 y = weather,
